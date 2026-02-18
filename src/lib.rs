@@ -217,7 +217,7 @@ impl BackendDevice for CudaDevice {
 // CudaStorage — Device memory for each supported dtype
 
 /// GPU-side storage. Each variant wraps a cudarc CudaSlice for the corresponding dtype.
-/// F16 and BF16 are stored as CudaSlice<u16> (bit-level representation).
+/// F16 and BF16 are stored as `CudaSlice<u16>` (bit-level representation).
 pub enum CudaStorage {
     F16(CudaSlice<u16>),
     BF16(CudaSlice<u16>),
@@ -2473,7 +2473,7 @@ impl Backend for CudaBackend {
 // Host ↔ Device transfer helpers
 
 impl CudaStorage {
-    /// Get the underlying CudaSlice<f32> (returns error if dtype doesn't match).
+    /// Get the underlying `CudaSlice<f32>` (returns error if dtype doesn't match).
     pub fn as_cuda_slice_f32(&self) -> Result<&CudaSlice<f32>> {
         match self {
             CudaStorage::F32(s) => Ok(s),
@@ -2484,7 +2484,7 @@ impl CudaStorage {
         }
     }
 
-    /// Get the underlying CudaSlice<u16> for F16 or BF16 storage.
+    /// Get the underlying `CudaSlice<u16>` for F16 or BF16 storage.
     pub fn as_cuda_slice_u16(&self) -> Result<&CudaSlice<u16>> {
         match self {
             CudaStorage::F16(s) | CudaStorage::BF16(s) => Ok(s),
@@ -2495,7 +2495,7 @@ impl CudaStorage {
         }
     }
 
-    /// Transfer data from host Vec<f32> to a new CudaStorage on the given device.
+    /// Transfer data from host `Vec<f32>` to a new CudaStorage on the given device.
     pub fn from_f32_vec(data: Vec<f32>, device: &CudaDevice) -> Result<Self> {
         let s = device
             .dev
@@ -2504,7 +2504,7 @@ impl CudaStorage {
         Ok(CudaStorage::F32(s))
     }
 
-    /// Transfer data from host Vec<f64> to a new CudaStorage on the given device.
+    /// Transfer data from host `Vec<f64>` to a new CudaStorage on the given device.
     pub fn from_f64_vec(data: Vec<f64>, device: &CudaDevice) -> Result<Self> {
         let s = device
             .dev
@@ -2513,7 +2513,7 @@ impl CudaStorage {
         Ok(CudaStorage::F64(s))
     }
 
-    /// Transfer data from host Vec<f16> to a new F16 CudaStorage on the given device.
+    /// Transfer data from host `Vec<f16>` to a new F16 CudaStorage on the given device.
     pub fn from_f16_vec(data: Vec<f16>, device: &CudaDevice) -> Result<Self> {
         let bits: Vec<u16> = data.iter().map(|v| v.to_bits()).collect();
         let s = device
@@ -2523,7 +2523,7 @@ impl CudaStorage {
         Ok(CudaStorage::F16(s))
     }
 
-    /// Transfer data from host Vec<bf16> to a new BF16 CudaStorage on the given device.
+    /// Transfer data from host `Vec<bf16>` to a new BF16 CudaStorage on the given device.
     pub fn from_bf16_vec(data: Vec<bf16>, device: &CudaDevice) -> Result<Self> {
         let bits: Vec<u16> = data.iter().map(|v| v.to_bits()).collect();
         let s = device
@@ -2533,7 +2533,7 @@ impl CudaStorage {
         Ok(CudaStorage::BF16(s))
     }
 
-    /// Copy all data to host as Vec<f64>.
+    /// Copy all data to host as `Vec<f64>`.
     pub fn to_host_f64(&self, device: &CudaDevice) -> Result<Vec<f64>> {
         match self {
             CudaStorage::F16(s) => {

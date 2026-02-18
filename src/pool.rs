@@ -39,7 +39,7 @@ pub struct PoolStats {
 
 // Typed free-list bucket
 
-/// A per-type free-list: maps element count → stack of free CudaSlice<T>.
+/// A per-type free-list: maps element count → stack of free `CudaSlice<T>`.
 struct TypedPool<T> {
     buckets: Mutex<HashMap<usize, Vec<CudaSlice<T>>>>,
 }
