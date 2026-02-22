@@ -113,7 +113,7 @@ mod tests {
         let data = same.to_f64_vec().unwrap();
         assert!(approx(data[0], 1.0, 1e-6));
     }
- 
+
     // F16 computation on GPU (ops work with half-precision tensors)
 
     #[test]

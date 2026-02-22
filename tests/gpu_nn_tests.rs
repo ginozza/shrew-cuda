@@ -180,7 +180,7 @@ mod tests {
         let y = bn.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[4, 2, 4, 4]);
     }
-  
+
     // Sequential
 
     #[test]
@@ -199,8 +199,8 @@ mod tests {
         let y = seq.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[3, 2]);
     }
-  
-    // Loss functions on GPU 
+
+    // Loss functions on GPU
 
     #[test]
     fn test_mse_loss_gpu() {
