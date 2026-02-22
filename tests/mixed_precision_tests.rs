@@ -15,9 +15,7 @@ mod tests {
         (a - b).abs() < tol
     }
 
-    // ─────────────────────────────────────────────────────────────────────
     // On-device dtype casting (CUDA cast kernels)
-    // ─────────────────────────────────────────────────────────────────────
 
     #[test]
     fn test_cast_f32_to_f16() {
@@ -115,10 +113,8 @@ mod tests {
         let data = same.to_f64_vec().unwrap();
         assert!(approx(data[0], 1.0, 1e-6));
     }
-
-    // ─────────────────────────────────────────────────────────────────────
+ 
     // F16 computation on GPU (ops work with half-precision tensors)
-    // ─────────────────────────────────────────────────────────────────────
 
     #[test]
     fn test_f16_binary_ops() {
@@ -183,9 +179,7 @@ mod tests {
         assert!(approx(data[2], 90.0, 1.0));
     }
 
-    // ─────────────────────────────────────────────────────────────────────
     // Mixed precision forward+backward (F16 activations, F32 weights)
-    // ─────────────────────────────────────────────────────────────────────
 
     #[test]
     fn test_f16_forward_backward() {
