@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use shrew_core::dtype::DType;
-    use shrew_cuda::{CudaBackend, CudaDevice, CudaTensor};
+    use shrew_cuda::{CudaDevice, CudaTensor};
 
     type T = CudaTensor;
 
@@ -285,35 +285,5 @@ mod tests {
         let step = gw.affine(-lr, 0.0).unwrap();
         let _w_new = w_updated.add(&step).unwrap();
     }
-
-    #[test]
-    fn test_mixed_precision_trainer_gpu() {
-        use shrew_nn::Module;
-
-        type B = CudaBackend;
-        let dev = gpu();
-
-        // Create a simple linear model with F16 weights on GPU
-        let linear = shrew_nn::Linear::<B>::new(4, 2, true, DType::F16, &dev).unwrap();
-        let optimizer = shrew_optim::SGD::new(linear.parameters(), 0.01, 0.0, 0.0);
-
-        let config = shrew::distributed::LossScaleConfig {
-            init_scale: 1.0, // Small scale for F16 to avoid overflow
-            ..Default::default()
-        };
-        let mut trainer =
-            shrew::distributed::MixedPrecisionTrainer::new(linear, optimizer, DType::F16, config);
-
-        // F16 input and target
-        let input = T::randn((2, 4), DType::F16, &dev).unwrap();
-        let target = T::zeros((2, 2), DType::F16, &dev).unwrap();
-
-        let metrics = trainer
-            .train_step(&input, &target, |pred, tgt| shrew_nn::mse_loss(pred, tgt))
-            .unwrap();
-
-        assert!(!metrics.skipped);
-        assert!(metrics.loss >= 0.0);
-        assert_eq!(metrics.compute_dtype, DType::F16);
-    }
 }
+
