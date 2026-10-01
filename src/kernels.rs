@@ -1414,6 +1414,58 @@ extern "C" __global__ void cast_f32_to_bf16(const float* inp, unsigned short* ou
     if (idx < n) out[idx] = f32_to_bf16(inp[idx]);
 }
 
+// ── CONV2D HELPERS ──────────────────────────────────────────────────────────
+
+extern "C" __global__ void im2col_f32(
+    const float* data_im,
+    int channels, int height, int width,
+    int kernel_h, int kernel_w,
+    int pad_h, int pad_w,
+    int stride_h, int stride_w,
+    float* data_col
+) {
+    int height_col = (height + 2 * pad_h - kernel_h) / stride_h + 1;
+    int width_col = (width + 2 * pad_w - kernel_w) / stride_w + 1;
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int num_elements = channels * height_col * width_col;
+    if (index >= num_elements) return;
+
+    int w_col = index % width_col;
+    int h_col = (index / width_col) % height_col;
+    int c_im = index / (width_col * height_col);
+
+    int c_col = c_im * kernel_h * kernel_w;
+    int h_offset = h_col * stride_h - pad_h;
+    int w_offset = w_col * stride_w - pad_w;
+
+    float* data_col_ptr = data_col + (c_col * (height_col * width_col) + h_col * width_col + w_col);
+    const float* data_im_ptr = data_im + (c_im * height + h_offset) * width + w_offset;
+
+    for (int i = 0; i < kernel_h; ++i) {
+        for (int j = 0; j < kernel_w; ++j) {
+            int h_im = h_offset + i;
+            int w_im = w_offset + j;
+            *data_col_ptr = (h_im >= 0 && w_im >= 0 && h_im < height && w_im < width) ?
+                data_im_ptr[i * width + j] : 0.0f;
+            data_col_ptr += height_col * width_col;
+        }
+    }
+}
+
+extern "C" __global__ void add_bias_channel_f32(
+    float* out,
+    const float* bias,
+    int channels,
+    int spatial_dim,
+    int total_elements
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total_elements) {
+        int c = (idx / spatial_dim) % channels;
+        out[idx] += bias[c];
+    }
+}
+
 "#;
 
 /// All kernel function names used in load_ptx. Must match the extern "C" names above.
@@ -1635,6 +1687,9 @@ pub const KERNEL_NAMES: &[&str] = &[
     "cast_f32_to_f16",
     "cast_bf16_to_f32",
     "cast_f32_to_bf16",
+    // conv2d
+    "im2col_f32",
+    "add_bias_channel_f32",
 ];
 
 /// Module name used in cudarc's PTX loading.

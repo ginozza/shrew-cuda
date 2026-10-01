@@ -47,10 +47,116 @@ pub struct CudaDevice {
     ordinal: usize,
 }
 
+#[cfg(target_os = "windows")]
+fn ensure_cuda_dlls_windows() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        use std::path::{Path, PathBuf};
+        use std::fs;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn LoadLibraryA(lpLibFileName: *const i8) -> *mut std::ffi::c_void;
+            fn SetDllDirectoryA(lpPathName: *const i8) -> i32;
+        }
+
+        let mut search_dirs: Vec<PathBuf> = Vec::new();
+        if let Ok(p) = std::env::var("CUDA_PATH") {
+            search_dirs.push(PathBuf::from(&p).join("bin").join("x64"));
+            search_dirs.push(PathBuf::from(&p).join("bin"));
+        }
+        if let Ok(p) = std::env::var("CUDA_HOME") {
+            search_dirs.push(PathBuf::from(&p).join("bin").join("x64"));
+            search_dirs.push(PathBuf::from(&p).join("bin"));
+        }
+        let default_toolkit = Path::new(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA");
+        if default_toolkit.exists() {
+            if let Ok(entries) = fs::read_dir(default_toolkit) {
+                for entry in entries.flatten() {
+                    search_dirs.push(entry.path().join("bin").join("x64"));
+                    search_dirs.push(entry.path().join("bin"));
+                }
+            }
+        }
+        if let Ok(cur_exe) = std::env::current_exe() {
+            if let Some(parent) = cur_exe.parent() {
+                search_dirs.push(parent.to_path_buf());
+                search_dirs.push(parent.join("deps"));
+            }
+        }
+
+        let temp_dll_dir = std::env::temp_dir().join("shrew_cuda_dlls");
+        let _ = fs::create_dir_all(&temp_dll_dir);
+
+        // Tell Windows DLL loader where to find CUDA dependencies
+        for dir in &search_dirs {
+            if dir.exists() {
+                if let Ok(c_dir) = std::ffi::CString::new(dir.to_string_lossy().as_bytes()) {
+                    unsafe { SetDllDirectoryA(c_dir.as_ptr()); }
+                }
+                break;
+            }
+        }
+
+        let mappings = [
+            ("cublas64.dll", "cublas64_"),
+            ("cublasLt64.dll", "cublasLt64_"),
+            ("nvrtc64.dll", "nvrtc64_"),
+        ];
+
+        for (generic_name, prefix) in mappings {
+            let temp_target = temp_dll_dir.join(generic_name);
+            if temp_target.exists() {
+                if let Ok(c_path) = std::ffi::CString::new(temp_target.to_string_lossy().as_bytes()) {
+                    unsafe { LoadLibraryA(c_path.as_ptr()); }
+                }
+                continue;
+            }
+
+            for dir in &search_dirs {
+                let direct_target = dir.join(generic_name);
+                if direct_target.exists() {
+                    if let Ok(c_path) = std::ffi::CString::new(direct_target.to_string_lossy().as_bytes()) {
+                        unsafe { LoadLibraryA(c_path.as_ptr()); }
+                    }
+                    break;
+                }
+
+                if let Ok(entries) = fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(prefix) && name.ends_with(".dll") {
+                            let src = entry.path();
+                            let _ = fs::copy(&src, &temp_target);
+                            if let Ok(c_path) = std::ffi::CString::new(temp_target.to_string_lossy().as_bytes()) {
+                                unsafe { LoadLibraryA(c_path.as_ptr()); }
+                            }
+                            break;
+                        }
+                        if name.starts_with("nvrtc-builtins") && name.ends_with(".dll") {
+                            let dest = temp_dll_dir.join(&name);
+                            if !dest.exists() {
+                                let _ = fs::copy(&entry.path(), &dest);
+                            }
+                        }
+                    }
+                }
+                if temp_target.exists() {
+                    break;
+                }
+            }
+        }
+    });
+}
+
 impl CudaDevice {
     /// Create a new CUDA device for the given GPU ordinal (0, 1, ...).
     /// Compiles all Shrew CUDA kernels on first creation.
     pub fn new(ordinal: usize) -> Result<Self> {
+        #[cfg(target_os = "windows")]
+        ensure_cuda_dlls_windows();
+
         let dev = cudarc::driver::CudaDevice::new(ordinal)
             .map_err(|e| Error::msg(format!("CUDA device creation failed: {e}")))?;
 
@@ -84,6 +190,11 @@ impl CudaDevice {
     /// Get the underlying cudarc device handle.
     pub fn device(&self) -> &Arc<cudarc::driver::CudaDevice> {
         &self.dev
+    }
+
+    /// Get the GPU ordinal (device index).
+    pub fn ordinal(&self) -> usize {
+        self.ordinal
     }
 
     /// Get the cuBLAS handle.
@@ -2467,6 +2578,135 @@ impl Backend for CudaBackend {
                 Self::from_f64_slice(&data, dtype, device)
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn conv2d(
+        input: &Self::Storage,
+        input_layout: &Layout,
+        weight: &Self::Storage,
+        weight_layout: &Layout,
+        bias: Option<(&Self::Storage, &Layout)>,
+        stride: [usize; 2],
+        padding: [usize; 2],
+        device: &Self::Device,
+    ) -> Result<Option<Self::Storage>> {
+        // Fast path: F32 conv2d on GPU via im2col + cuBLAS
+        if input.dtype() != DType::F32 || weight.dtype() != DType::F32 {
+            return Ok(None);
+        }
+
+        let in_dims = input_layout.dims();
+        let w_dims = weight_layout.dims();
+        if in_dims.len() != 4 || w_dims.len() != 4 {
+            return Ok(None);
+        }
+
+        let (n, c_in, h, w) = (in_dims[0], in_dims[1], in_dims[2], in_dims[3]);
+        let (c_out, wc_in, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
+        if c_in != wc_in {
+            return Ok(None);
+        }
+
+        let [sh, sw] = stride;
+        let [ph, pw] = padding;
+        if h + 2 * ph < kh || w + 2 * pw < kw {
+            return Ok(None);
+        }
+
+        let h_out = (h + 2 * ph - kh) / sh + 1;
+        let w_out = (w + 2 * pw - kw) / sw + 1;
+
+        let in_contig = Self::to_contiguous(input, input_layout)?;
+        let w_contig = Self::to_contiguous(weight, weight_layout)?;
+        let in_slice = in_contig.as_cuda_slice_f32()?;
+        let w_slice = w_contig.as_cuda_slice_f32()?;
+
+        let im2col_func = device.get_func("im2col_f32")?;
+        let col_rows = c_in * kh * kw;
+        let col_cols = h_out * w_out;
+        let col_size = col_rows * col_cols;
+
+        let mut col_buf: CudaSlice<f32> = device.dev.alloc_zeros(col_size)
+            .map_err(|e| Error::msg(format!("im2col alloc failed: {e}")))?;
+
+        let out_total = n * c_out * h_out * w_out;
+        let mut out_buf: CudaSlice<f32> = device.dev.alloc_zeros(out_total)
+            .map_err(|e| Error::msg(format!("out alloc failed: {e}")))?;
+
+        use cudarc::cublas::sys::cublasOperation_t;
+
+        let sample_in_size = c_in * h * w;
+        let sample_out_size = c_out * col_cols;
+
+        for batch in 0..n {
+            let in_offset = batch * sample_in_size;
+            let in_batch_slice = in_slice.slice(in_offset..in_offset + sample_in_size);
+            let num_col_threads = (c_in * h_out * w_out) as u32;
+            let cfg = launch_cfg(num_col_threads as usize);
+
+            unsafe {
+                im2col_func.clone().launch(
+                    cfg,
+                    (
+                        &in_batch_slice,
+                        c_in as i32,
+                        h as i32,
+                        w as i32,
+                        kh as i32,
+                        kw as i32,
+                        ph as i32,
+                        pw as i32,
+                        sh as i32,
+                        sw as i32,
+                        &mut col_buf,
+                    ),
+                )
+            }.map_err(|e| Error::msg(format!("launch im2col_f32 failed: {e}")))?;
+
+            let out_offset = batch * sample_out_size;
+            let out_batch_slice = out_buf.slice(out_offset..out_offset + sample_out_size);
+
+            unsafe {
+                cudarc::cublas::result::sgemm(
+                    *device.blas.handle(),
+                    cublasOperation_t::CUBLAS_OP_N,
+                    cublasOperation_t::CUBLAS_OP_N,
+                    col_cols as i32,
+                    c_out as i32,
+                    col_rows as i32,
+                    (&1.0f32) as *const f32,
+                    *col_buf.device_ptr() as *const f32,
+                    col_cols as i32,
+                    *w_slice.device_ptr() as *const f32,
+                    col_rows as i32,
+                    (&0.0f32) as *const f32,
+                    *out_batch_slice.device_ptr() as *mut f32,
+                    col_cols as i32,
+                )
+            }.map_err(|e| Error::msg(format!("cublas conv2d sgemm failed: {e:?}")))?;
+        }
+
+        if let Some((b_storage, b_layout)) = bias {
+            let b_contig = Self::to_contiguous(b_storage, b_layout)?;
+            let b_slice = b_contig.as_cuda_slice_f32()?;
+            let bias_func = device.get_func("add_bias_channel_f32")?;
+            let cfg = launch_cfg(out_total);
+            unsafe {
+                bias_func.launch(
+                    cfg,
+                    (
+                        &mut out_buf,
+                        b_slice,
+                        c_out as i32,
+                        col_cols as i32,
+                        out_total as i32,
+                    ),
+                )
+            }.map_err(|e| Error::msg(format!("launch add_bias_channel_f32 failed: {e}")))?;
+        }
+
+        Ok(Some(CudaStorage::F32(out_buf)))
     }
 }
 

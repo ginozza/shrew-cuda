@@ -688,4 +688,26 @@ mod tests {
             1e-5,
         );
     }
+
+    #[test]
+    fn test_cuda_conv2d() {
+        let dev = gpu();
+        // Input: [1, 1, 4, 4]
+        let x_data: Vec<f64> = (1..=16).map(|v| v as f64).collect();
+        let x = T::from_f64_slice(&x_data, (1, 1, 4, 4), DType::F32, &dev).unwrap();
+
+        // Weight: [1, 1, 2, 2] ones
+        let w = T::ones((1, 1, 2, 2), DType::F32, &dev).unwrap();
+        let bias = T::from_f64_slice(&[10.0], (1,), DType::F32, &dev).unwrap();
+
+        // Stride [1,1], Padding [0,0] -> Output [1, 1, 3, 3]
+        let y = x.conv2d(&w, Some(&bias), [1, 1], [0, 0]).unwrap();
+        assert_eq!(y.shape().dims(), &[1, 1, 3, 3]);
+
+        let y_data = y.to_f64_vec().unwrap();
+        // Top-left 2x2 sum: 1+2+5+6 = 14 + bias 10 = 24
+        assert!(approx(y_data[0], 24.0, 1e-4), "Expected 24.0, got {}", y_data[0]);
+        // Top-right 2x2 sum: 2+3+6+7 = 18 + bias 10 = 28
+        assert!(approx(y_data[1], 28.0, 1e-4), "Expected 28.0, got {}", y_data[1]);
+    }
 }
